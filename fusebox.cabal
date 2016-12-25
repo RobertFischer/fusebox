@@ -1,0 +1,27 @@
+name:                fusebox
+version:             0.0.0.1
+synopsis:            FUSE support library and implementations
+description:         Please see README.md
+homepage:            https://github.com/RobertFischer/fusebox#README.md
+license:             BSD3
+license-file:        LICENSE
+author:              Robert Fischer
+maintainer:          smokejumperit+stack@gmail.com
+copyright:           BSD3
+category:            software
+build-type:          Simple
+cabal-version:       >=1.10
+extra-source-files:  README.md
+
+library 
+  hs-source-dirs:      shared
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5,
+                       either >= 4.4.1.1 && < 4.5
+
+executable MemoryFS
+  hs-source-dirs:      MemoryFS
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5,
+                       fusebox
