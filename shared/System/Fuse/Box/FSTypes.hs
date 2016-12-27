@@ -1,20 +1,21 @@
 module System.Fuse.Box.FSTypes
   (
-    module System.Fuse.Box.FSTypes
+    CommonFS,
+    ReadFS,
+    WriteFS,
+    FuseBox
   ) where
 
 import System.Fuse
 import Data.Either
-import Control.Monad.Trans.Either
+import Control.Monad.IO.Class
 
 -- |Captures the result of a file system call.
 newtype FSResult a = FSResult (Either Errno a)
-type IOFSResult a = IO (FSResult a)
-type FileIOResult a = Node -> IOFSResult a
 
-iofsResultUnpack :: IOFSResult a -> IO (Either Errno a)
+iofsResultUnpack :: (MonadIO m) => m a -> IO (Either Errno a)
 iofsResultUnpack act = do
-  (FSResult a) <- act
+  (FSResult a) <- liftIO act
   return a
 
 fsResultToEither :: FSResult a -> Either Errno a
@@ -27,8 +28,6 @@ fsError err = FSResult $ Left err
 
 fsOkay :: FSResult ()
 -- ^Convenience method for generating an 'eOK' file system result.
---  (This is technically an error, but using 'fsError' to mean
---  'eOK' causes cognitive dissonance.)
 fsOkay = FSResult $ Left eOK
 
 fsResult :: a -> FSResult a
@@ -45,48 +44,75 @@ fsErrOrOkay :: FSResult a -> Errno
 fsErrOrOkay (FSResult (Left err)) = err
 fsErrOrOkay (FSResult (Right _))  = eOK
 
+nodeify :: (FilePath -> a) -> (Node -> a)
+-- ^Converts functions that start with a 'FilePath' to one that
+-- starts with a 'Node'.
+nodeify f = \node -> f (nodeFilePath node)
+
+denodeify :: (Node -> a) -> (FilePath -> a)
+-- ^Converts functions that start with a 'Node' to one that
+-- starts with a 'FilePath'.
+denodeify f = \fp -> f (nodeFromFilePath fp)
+
+denodeify2 :: (Node -> Node -> a) -> (FilePath -> FilePath -> a)
+-- ^Converts a function that starts with two 'Node' arguments to
+-- a function that starts with two 'FilePath' arguments.
+denodeify2 f = \fp1 fp2 -> f (nodeFromFilePath fp1) (nodeFromFilePath fp2)
+
+-- |Shorthand for the default FUSE operations.
+def = defaultFuseOps
+
+-- |Shorthand for when we need to unpack to an error number exclusively.
+denodeToErrno f = fsErrorOrOkay <$> denodeify f
+
+-- |Shorthand for when we need to unpack a bi-'Node' function to an error number exclusively.
+denode2ToErrno f = fsErrorOrOkay <$> denodeify2 f
+
+-- |Shorthand for when we need to unpack the file system monad into a full result.
+denode f = iofsResultUnpack $ denodeify f
+
 -- |Class for common filesystem operations.
-class CommonFS fh where
-  fsOpen :: OpenMode -> OpenFileFlags -> FileIOResult fh
-  fsClose :: fh -> FileIOResult ()
-  fsSyncFile :: SyncType -> FileIOResult ()
-  fsOpenDir :: FileIOResult ()
-  fsSnycDir :: SyncType -> FileIOResult ()
-  fsCloseDir :: FileIOResult ()
-  fsInit :: IO ()
-  fsDestroy :: IO ()
-  fsFlush :: fh -> FileIOResult ()
+class (MonadIO m) => CommonFS m fh where
+  fsOpen :: Node -> OpenMode -> OpenFileFlags -> m (FSResult fh)
+  fsClose :: Node -> fh -> m (FSResult ())
+  fsSyncFile :: Node -> SyncType -> m (FSResult ())
+  fsOpenDir :: Node -> m (FSResult ())
+  fsSyncDir :: Node -> SyncType -> m (FSResult ())
+  fsCloseDir :: Node -> m (FSResult ())
+  fsInit :: m ()
+  fsDestroy :: m ()
+  fsFlush :: Node -> fh -> m (FSResult ())
 
 -- |Class for filesystem operations done by readable filesystems.
-class CommonFS fh => ReadFS fh where
-  fsGetFileStat :: FileIOResult FileStat
-  fsReadSymlink :: FileIOResult Node
-  fsRead :: fh -> ByteCount -> FileOffset -> FileIOResult Byte
-  fsGetStats :: FileIOResult FileSystemStatus
-  fsReadDir :: FileIOResult [(Node, FileStat)]
-  fsAccess :: Int -> FileIOResult (),
+class (CommonFS m fh) => ReadFS m fh where
+  fsGetFileStat :: Node -> m (FSResult FileStat)
+  fsReadSymlink :: Node -> m (FSResult Node)
+  fsRead :: Node -> fh -> ByteCount -> FileOffset -> m (FSResult ByteString)
+  fsGetStats :: Node -> m (FSResult FileSystemStatus)
+  fsReadDir :: Node -> m (FSResult [(Node, FileStat)])
+  fsAccess :: Node -> Int -> m (FSResult ()),
 
 -- |Class for filesystem operations done by writable filesystems.
-class CommonFS fh => WriteFS fh where
-  fsCreateLink :: Node -> FileIOResult ()
-  fsSetFileMode :: FileMode FileIOResult ()
-  fsSetOwnerGroup :: UserID -> GroupID -> FileIOResult ()
-  fsSetFileSize :: FileOffset -> FileIOResult ()
-  fsSetFileTimes :: EpochTime -> EpochTime -> FileIOResult ()
-  fsCreateDevice :: EntryType -> FileMode -> DeviceID -> FileIOResult ()
-  fsCreateDirectory :: FileMode -> FileIOResult ()
-  fsRemoveLink :: FileIOResult ()
-  fsRemoveDirectory :: FileIOResult ()
-  fsCreateSymlink :: Node -> FileIOResult ()
-  fsWrite :: fh -> ByteString -> FileOffset -> FileIOResult ByteCount
+class (CommonFS m fh) => WriteFS m fh where
+  fsCreateLink :: Node -> Node -> m (FSResult ())
+  fsSetFileMode :: Node -> FileMode -> m (FSResult ())
+  fsSetOwnerGroup :: Node -> UserID -> GroupID -> m (FSResult ())
+  fsSetFileSize :: Node -> FileOffset -> m (FSResult ())
+  fsSetFileTimes :: Node -> EpochTime -> EpochTime -> m (FSResult ())
+  fsCreateDevice :: Node -> EntryType -> FileMode -> DeviceID -> m (FSResult ())
+  fsCreateDirectory :: Node -> FileMode -> m (FSResult ())
+  fsRemoveLink :: Node -> m (FSResult ())
+  fsRemoveDirectory :: Node -> m (FSResult ())
+  fsCreateSymlink :: Node -> Node -> m (FSResult ())
+  fsWrite :: Node -> fh -> ByteString -> FileOffset -> m (FSResult ByteCount)
 
 -- |Class for things that can provide filesystem operations
-class FuseBox fh where
-  fuseOperations :: FuseOperations fh
+class FuseBox m fh where
+  fuseOperations :: m (FuseOperations fh)
 
-instance {-# OVERLAPPABLE #-} ReadFS fh => FuseBox fh where
+instance {-# OVERLAPPABLE #-} (ReadFS m fh) => FuseBox m fh where
   fuseOperations = FuseOperations
-      {
+    {
         fuseGetFileStat = denode fsGetFileStat
         fuseReadSymbolicLink = denode fsReadSymlink,
         fuseCreateDevice = fuseCreateDevice def,
@@ -98,107 +124,87 @@ instance {-# OVERLAPPABLE #-} ReadFS fh => FuseBox fh where
         fuseCreateLink = fuseCreateLink def,
         fuseSetFileMode = fuseSetFileMode def,
         fuseSetFileTimes = fuseSetFileTimes def,
-        fuseOpen = \fp mode flags -> denode (fsOpen mode flags) fp,
-        fuseRead = \fp fh byteCnt offset -> denode (fsRead fh byteCnt offset) fp,
+        fuseOpen = denode fsOpen,
+        fuseRead = denode fsRead,
         fuseWrite = fuseWrite def,
         fuseGetFileSystemStats = denode fsGetStats,
-        fuseFlush = \fp fh -> fsErrorOrOkay <$> denode (fsFlush fh) fp,
+        fuseFlush = denodeToErrno fsFlush,
         fuseRelease = \fp fh -> do
-          _ <- denode (fsClose fh) fp
+          _ <- denode fsClose $ fp fh
           return (),
-        fuseSynchronizeFile = \fp syncType -> fsErrOrOkay <$> denode (f syncType) fp,
+        fuseSynchronizeFile = denodeToErrno fsSyncFile,
         fuseOpenDirectory = denodeToErrno fsOpenDir,
         fuseReadDirectory = denode fsReadDir,
         fuseReleaseDirectory = denodeToErrno fsCloseDir,
         fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
-        fuseAccess = \fp perms -> denodeToErrno (fsAccess perms) fp,
-        fuseInit = fsInit,
-        fuseDestroy = fsDestroy
+        fuseAccess = denodeToErrno fsAccess,
+        fuseInit = liftIO fsInit,
+        fuseDestroy = liftIO fsDestroy
       }
-    where
-      def = defaultFuseOps
-      denodeToErrno f fp = fsErrorOrOkay <$> f (nodeFromFilePath fp)
-      denode f fp = iofsResultUnpack $ f (nodeFromFilePath fp)
 
-instance {-# OVERLAPPABLE #-} WriteFS fh => FuseBox fh where
+instance {-# OVERLAPPABLE #-} (WriteFS m fh) => FuseBox m fh where
     fuseOperations = FuseOperations
       {
         fuseGetFileStat = fuseGetFileStat def,
         fuseReadSymbolicLink = fuseReadSymbolicLink def,
-        fuseCreateDevice = \fp entry mode devId -> denodeToErrno (fsCreateDevice entry mode devId) fp,
-        fuseCreateDirectory = \fp mode -> denodeToErrno (fsCreateDirectory mode) fp,
+        fuseCreateDevice = denodeToErrno fsCreateDevice,
+        fuseCreateDirectory = denodeToErrno fsCreateDirectory,
         fuseRemoveLink = denodeToErrno fsRemoveLink,
         fuseRemoveDirectory = denodeToErrno fsRemoveDirectory,
-        fuseCreateSymbolicLink = \source target -> denodeToErrno (fsCreateSymlink $ nodeFromFilePath target) source,
-        fuseRename = \source target -> denodeToErrno (fsRename $ nodeFromFilePath target) source,
-        fuseCreateLink = \source target -> denodeToErrno (fsCreateLink $ nodeFromFilePath target) source,
-        fuseSetFileMode = \fp mode -> denodeToErrno (fsSetFileMode mode) fp,
-        fuseSetOwnerAndGroup = \fp usrId grpId -> denodeToErrno (fsSetOwnerGroup usrId grpId) fp,
-        fuseSetFileSize = \fp offset -> denodeToErrno (fsSetFileSize offset) fp,
-        fuseSetFileTimes = \fp time1 time2 -> denodeToErrno (fsSetFileTimes time1 time2) fp,
-        fuseOpen = \fp mode flags = denode (fsOpen mode flags) fp,
+        fuseCreateSymbolicLink = denode2ToErrno fsCreateSymlink,
+        fuseRename = denode2ToErrno fsRename,
+        fuseCreateLink = denode2ToErrno fsCreateLink,
+        fuseSetFileMode = denodeToErrno fsSetFileMode,
+        fuseSetOwnerAndGroup = denodeToErrno fsSetOwnerGroup,
+        fuseSetFileSize = denodeToErrno fsSetFileSize,
+        fuseSetFileTimes = denodeToErrno fsSetFileTimes,
+        fuseOpen = denode fsOpen,
         fuseRead = fuseRead def,
-        fuseWrite = \fp fh bytes offset = denode (fsWrite fh bytes offset) fp,
+        fuseWrite = denode fsWrite,
         fuseGetFileSystemStats = fuseGetFileSystemStats def,
-        fuseFlush = \fp fh -> denodeToErrno (fsFlush fh) fp,
+        fuseFlush = denodeToErrno fsFlush,
         fuseRelease = \fp fh -> do
-          _ <- denode (fsClose fh) fp
+          _ <- denode fsClose $ fp fh
           return (),
-        fuseSynchronizeFile = \fp syncType -> denodeToErrno (fsSyncFile syncType) fp,
+        fuseSynchronizeFile = denodeToErrno fsSyncFile,
         fuseOpenDirectory = denodeToErrno fsOpenDir,
         fuseReadDirectory = fuseReleaseDirectory def,
         fuseReleaseDirectory = denodeToErrno fsCloseDir,
-        fuseSynchronizeDirectory = \fp syncType -> denodeToErrno (fsSnycDir syncType) fp,
+        fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
         fuseAccess = fuseAccess def,
-        fuseInit = fsInit,
-        fuseDestroy = fsDestroy
+        fuseInit = liftIO fsInit,
+        fuseDestroy = liftIO fsDestroy
       }
-  where
-    def = defaultFuseOps
-    denoded f fp = f $ nodeFromFilePath fp
-    denodeToErrno f fp = fsErrorOrOkay <$> denoded f fp
-    denode f fp = iofsResultUnpack $ denoded f fp
 
-instance {-# OVERLAPPING #-} (ReadFS fh, WriteFS fh) => FuseBox fh where
+instance {-# OVERLAPPING #-} (ReadFS m fh, WriteFS m fh) => FuseBox m fh where
     fuseOperations = FuseOperations
       {
         fuseGetFileStat = denode fsGetFileStat,
         fuseReadSymbolicLink = denode fsReadSymlink,
-        fuseCreateDevice = \fp entryType mode deviceId ->
-          denodeToErrno (fsCreateDevice entryType mode deviceId) fp,
-        fuseCreateDirectory = \fp mode -> denodeToErrno (fsCreateDirectory mode) fp,
+        fuseCreateDevice = denodeToErrno fsCreateDevice,
+        fuseCreateDirectory = denodeToErrno fsCreateDirectory,
         fuseRemoveLink = denodeToErrno fsRemoveLink,
         fuseRemoveDirectory = denodeToErrno fsRemoveDirectory,
-        fuseCreateSymbolicLink = \source target ->
-          denodeToErrno (fsCreateSymlink $ nodeFromFilePath target) source,
-        fuseRename = \source target ->
-          denodeToErrno (fsRename $ nodeFromFilePath target) source,
-        fuseCreateLink = \source target ->
-          denodeToErrno (fsCreateLink $ nodeFromFilePath target) source,
-        fuseSetFileMode = \fp mode -> denodeToErrno (fsSetFileMode mode) fp,
-        fuseSetOwnerAndGroup = \fp usrId grpId ->
-          denodeToErrno (fsSetOwnerGroup usrId grpId) fp,
-        fuseSetFileSize = \fp offset -> denodeToErrno (fsSetFileSize offset) fp,
-        fuseOpen = \fp mode flags = denode (fsOpen mode flags) fp,
-        fuseRead = \fp fh byteCnt offset -> denode (fsRead fh byteCnt offset) fp,
-        fuseWrite = \fp fh bytes offset = denode (fsWrite fh bytes offset) fp,
+        fuseCreateSymbolicLink = denode2ToErrno fsCreateSymlink,
+        fuseRename = denode2ToErrno fsRename,
+        fuseCreateLink = denode2ToErrno fsCreateLink,
+        fuseSetFileMode = denode2ToErrno fsSetFileMode,
+        fuseSetOwnerAndGroup = denodeToErrno fsSetOwnerGroup,
+        fuseSetFileSize = denodeToErrno fsSetFileSize,
+        fuseOpen = denode fsOpen,
+        fuseRead = denode fsRead,
+        fuseWrite = denode fsWrite,
         fuseGetFileSystemStats = denode fsGetStats,
-        fuseFlush = \fp fh -> denodeToErrno (fsFlush fh) fp,
+        fuseFlush = denodeToErrno fsFlush,
         fuseRelease = \fp fh -> do
-          _ <- denode (fsClose fh) fp
+          _ <- denode fsClose $ fp fh
           return (),
-        fuseSynchronizeFile = \fp syncType -> denodeToErrno (f syncType) fp,
+        fuseSynchronizeFile = denodeToErrno fsSyncFile,
         fuseOpenDirectory = denodeToErrno fsOpenDir,
         fuseReadDirectory = denode fsReadDir,
         fuseReleaseDirectory = denodeToErrno fsCloseDir,
         fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
-        fuseAccess = \fp perms -> denodeToErrno (fsAccess perms) fp,
-        fuseInit = fsInit,
-        fuseDestroy = fsDestroy
+        fuseAccess = denodeToErrno fsAccess,
+        fuseInit = liftIO fsInit,
+        fuseDestroy = liftIO fsDestroy
       }
-  where
-    def = defaultFuseOps
-    denoded f fp = f $ nodeFromFilePath fp
-    denodeToErrno f fp = fsErrorOrOkay <$> denoded f fp
-    denode f fp = iofsResultUnpack $ denoded f fp
-

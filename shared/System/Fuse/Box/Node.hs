@@ -18,11 +18,20 @@ import qualified Data.Text as T
 import Data.Text ( Text )
 import Data.List
 import qualified System.FilePath.Posix as POSIX
+import Data.Hashable ( Hashable )
+import Data.Eq
+import Data.Bits
 
 -- |Represents a node, which is a parsed filename.
 --  A 'NodeSegment' is a single segment (such as "bar" in "/foo/bar/baz").
 --  A 'NodePath' is a collection of segments, without any "." or ".." metacharacters.
-data Node = NodeSegment Text | NodePath [Node]
+data Node = NodeSegment Text | NodePath [Node] deriving (Show, Eq)
+
+instance Hashable Node where
+  hashwithSalt :: Int -> Node -> Int
+  hashWithSalt salt (NodeSegment t) = hashWithSalt salt t
+  hashWithSalt salt (NodePath []) = salt
+  hashWithSalt salt (NodePath nodes) = foldr xor 0 (map (hashWithSalt salt) nodes)
 
 nodesBacktrack :: [Node] -> Bool
 -- ^Convenience version of 'nodeBacktracks' that wraps the list of nodes in a 'NodePath'
@@ -47,6 +56,9 @@ nodeName (NodePath nodes) = T.intercalate POSIX.pathSeparator $ map nodeName nod
 nodeString :: Node -> String
 -- ^Convenience function that provides the return value of 'nodeName' as a 'String'.
 nodeString = T.unpack . nodeName
+
+nodeFilePath :: Node -> FilePath
+nodeFilePath = nodeString
 
 simplifyNode :: Node -> Node
 -- ^Simplifies the node. A segment of ".", "/", or ".." is returned as the empty path;
