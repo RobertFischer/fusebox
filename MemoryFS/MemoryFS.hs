@@ -6,15 +6,19 @@ module MemoryFS (
 
 import System.Fuse.Box
 import Control.Concurrent.STM.TVar
-import qualified Data.HashMap.Lazy ( HashMap ) as Map
-import qualified Data.ByteString.Lazy ( ByteString ) as B
+import qualified Data.HashMap.Lazy as Map
+import Data.HashMap.Lazy ( HashMap )
+import qualified Data.ByteString.Lazy as B
+import Data.ByteString.Lazy ( ByteString )
 import Control.Monad.Reader
 
 -- |Type that the 'MemoryFS' is holding onto.
 type MemoryMapTVar = TVar (HashMap Node ByteString)
 
--- |Type of the 'MemoryFS' monad stack itself.
-type MemoryFS a = ReaderT MemoryMapTVar IO a
+-- |Type of the 'MemoryFS' file system itself
+newtype MemoryFS = MemoryFS MemoryMapTVar
+
+
 
 runMemoryFS :: MemoryFS a -> IO a
 -- ^Constructs and executes the 'MemoryFS' monad in the 'IO' monad.

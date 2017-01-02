@@ -1,48 +1,49 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+
 module System.Fuse.Box.FSTypes
   (
     CommonFS,
     ReadFS,
     WriteFS,
-    FuseBox
+    FuseBox,
+    MonadIO,
+    MonadError,
+    FuseCall,
+    FuseResult
   ) where
 
 import System.Fuse
 import Data.Either
 import Control.Monad.IO.Class
+import Control.Monad.Except
+import System.Fuse.Box.Node
 
--- |Captures the result of a file system call.
-newtype FSResult a = FSResult (Either Errno a)
+type FuseResult a = IO (Either Errno a)
+type FuseCall = IO Errno
 
-iofsResultUnpack :: (MonadIO m) => m a -> IO (Either Errno a)
-iofsResultUnpack act = do
-  (FSResult a) <- liftIO act
-  return a
+class (MonadIO m, MonadError Errno m) => MonadFuse m where
+  runFuse :: m a -> FuseResult a
+  -- ^Runs fuse and unpacks it into a 'FuseResult'
 
-fsResultToEither :: FSResult a -> Either Errno a
--- ^Translates a file system result into an 'Either'.
-fsResultToEither (FSResult a) = a
+  fsError :: Errno -> FuseResult a
+  -- ^Convenience method for throwing an 'Errno' as a result.
+  fsError a = return (Left a)
 
-fsError :: Errno -> FSResult a
--- ^Convenience method for generating a file system error result.
-fsError err = FSResult $ Left err
+  fsOkay :: FuseResult a
+  -- ^Convenience method for generating an 'eOK' file system result.
+  fsOkay = fsError eOK
 
-fsOkay :: FSResult ()
--- ^Convenience method for generating an 'eOK' file system result.
-fsOkay = FSResult $ Left eOK
-
-fsResult :: a -> FSResult a
--- ^Convenience method for returning a 'FSResult' that returns a value.
---  If you pass '()' as an argument to this function, it is the same as
---  calling 'fsOkay'.
-fsResult () = fsOkay
-fsResult a = FSResult $ Right a
-
-fsErrOrOkay :: FSResult a -> Errno
--- ^Returns the 'Errno' value, which may be 'eOK'. If the value of
--- the 'FSResult' is a 'Right', then it returns 'eOK'. If the value
--- is a 'Left', returns the wrapped value.
-fsErrOrOkay (FSResult (Left err)) = err
-fsErrOrOkay (FSResult (Right _))  = eOK
+  fsErrOrOkay :: FuseResult a -> FuseCall
+  -- ^Returns the 'Errno' value, which may be 'eOK'. If the 'FuseCall'
+  -- successfully returns a value (including `()`), then this function
+  -- returns 'eOK'. If the call raises an error, returns the error value.
+  fsErrOrOkay action = do
+    result <- action
+    case result of
+      (Left e) -> return e
+      (Right _) -> fsOkay
 
 nodeify :: (FilePath -> a) -> (Node -> a)
 -- ^Converts functions that start with a 'FilePath' to one that
@@ -59,61 +60,64 @@ denodeify2 :: (Node -> Node -> a) -> (FilePath -> FilePath -> a)
 -- a function that starts with two 'FilePath' arguments.
 denodeify2 f = \fp1 fp2 -> f (nodeFromFilePath fp1) (nodeFromFilePath fp2)
 
--- |Shorthand for the default FUSE operations.
-def = defaultFuseOps
-
 -- |Shorthand for when we need to unpack to an error number exclusively.
-denodeToErrno f = fsErrorOrOkay <$> denodeify f
+denodeToErrno f = fsErrOrOkay <$> denodeify f
 
 -- |Shorthand for when we need to unpack a bi-'Node' function to an error number exclusively.
-denode2ToErrno f = fsErrorOrOkay <$> denodeify2 f
+denode2ToErrno f = fsErrOrOkay <$> denodeify2 f
 
 -- |Shorthand for when we need to unpack the file system monad into a full result.
-denode f = iofsResultUnpack $ denodeify f
+denode f = runFuseCall $ denodeify f
 
 -- |Class for common filesystem operations.
-class (MonadIO m) => CommonFS m fh where
-  fsOpen :: Node -> OpenMode -> OpenFileFlags -> m (FSResult fh)
-  fsClose :: Node -> fh -> m (FSResult ())
-  fsSyncFile :: Node -> SyncType -> m (FSResult ())
-  fsOpenDir :: Node -> m (FSResult ())
-  fsSyncDir :: Node -> SyncType -> m (FSResult ())
-  fsCloseDir :: Node -> m (FSResult ())
+class (MonadFuse m) => CommonFS m fh where
+  fsOpen :: Node -> OpenMode -> OpenFileFlags -> m fh
+  fsClose :: Node -> fh -> m ()
+  fsSyncFile :: Node -> SyncType -> m ()
+  fsOpenDir :: Node -> m ()
+  fsSyncDir :: Node -> SyncType -> m ()
+  fsCloseDir :: Node -> m ()
   fsInit :: m ()
   fsDestroy :: m ()
-  fsFlush :: Node -> fh -> m (FSResult ())
+  fsFlush :: Node -> fh -> m ()
 
 -- |Class for filesystem operations done by readable filesystems.
 class (CommonFS m fh) => ReadFS m fh where
-  fsGetFileStat :: Node -> m (FSResult FileStat)
-  fsReadSymlink :: Node -> m (FSResult Node)
-  fsRead :: Node -> fh -> ByteCount -> FileOffset -> m (FSResult ByteString)
-  fsGetStats :: Node -> m (FSResult FileSystemStatus)
-  fsReadDir :: Node -> m (FSResult [(Node, FileStat)])
-  fsAccess :: Node -> Int -> m (FSResult ()),
+  fsGetFileStat :: Node -> m FileStat
+  fsReadSymlink :: Node -> m Node
+  fsRead :: Node -> fh -> ByteCount -> FileOffset -> m ByteString
+  fsGetStats :: Node -> m FileSystemStatus
+  fsReadDir :: Node -> m [(Node, FileStat)]
+  fsAccess :: Node -> Int -> m ()
 
 -- |Class for filesystem operations done by writable filesystems.
 class (CommonFS m fh) => WriteFS m fh where
-  fsCreateLink :: Node -> Node -> m (FSResult ())
-  fsSetFileMode :: Node -> FileMode -> m (FSResult ())
-  fsSetOwnerGroup :: Node -> UserID -> GroupID -> m (FSResult ())
-  fsSetFileSize :: Node -> FileOffset -> m (FSResult ())
-  fsSetFileTimes :: Node -> EpochTime -> EpochTime -> m (FSResult ())
-  fsCreateDevice :: Node -> EntryType -> FileMode -> DeviceID -> m (FSResult ())
-  fsCreateDirectory :: Node -> FileMode -> m (FSResult ())
-  fsRemoveLink :: Node -> m (FSResult ())
-  fsRemoveDirectory :: Node -> m (FSResult ())
-  fsCreateSymlink :: Node -> Node -> m (FSResult ())
-  fsWrite :: Node -> fh -> ByteString -> FileOffset -> m (FSResult ByteCount)
+  fsCreateLink :: Node -> Node -> m ()
+  fsSetFileMode :: Node -> FileMode -> m ()
+  fsSetOwnerGroup :: Node -> UserID -> GroupID -> m ()
+  fsSetFileSize :: Node -> FileOffset -> m ()
+  fsSetFileTimes :: Node -> EpochTime -> EpochTime -> m ()
+  fsCreateDevice :: Node -> EntryType -> FileMode -> DeviceID -> m ()
+  fsCreateDirectory :: Node -> FileMode -> m ()
+  fsRemoveLink :: Node -> m ()
+  fsRemoveDirectory :: Node -> m ()
+  fsCreateSymlink :: Node -> Node -> m ()
+  fsWrite :: Node -> fh -> ByteString -> FileOffset -> m ByteCount
 
 -- |Class for things that can provide filesystem operations
 class FuseBox m fh where
   fuseOperations :: m (FuseOperations fh)
+  -- ^Provides the FUSE operations that make up the implementation
+  -- of FUSE.
+
+  def :: FuseOperations
+  -- ^Shorthand for the default FUSE operations.
+  def = defaultFuseOps
 
 instance {-# OVERLAPPABLE #-} (ReadFS m fh) => FuseBox m fh where
   fuseOperations = FuseOperations
     {
-        fuseGetFileStat = denode fsGetFileStat
+        fuseGetFileStat = denode fsGetFileStat,
         fuseReadSymbolicLink = denode fsReadSymlink,
         fuseCreateDevice = fuseCreateDevice def,
         fuseCreateDirectory = fuseCreateDirectory def,

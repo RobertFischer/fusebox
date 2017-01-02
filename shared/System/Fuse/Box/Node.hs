@@ -5,6 +5,7 @@ module System.Fuse.Box.Node
     Text,
     nodeName,
     nodeString,
+    nodeFilePath,
     simplifyNode,
     nodeBacktracks,
     nodesBacktrack,
@@ -12,14 +13,10 @@ module System.Fuse.Box.Node
     nodeFromFilePath
   ) where
 
-import System.Fuse.Box
-
 import qualified Data.Text as T
 import Data.Text ( Text )
-import Data.List
 import qualified System.FilePath.Posix as POSIX
-import Data.Hashable ( Hashable )
-import Data.Eq
+import Data.Hashable ( Hashable, hashWithSalt )
 import Data.Bits
 
 -- |Represents a node, which is a parsed filename.
@@ -28,7 +25,6 @@ import Data.Bits
 data Node = NodeSegment Text | NodePath [Node] deriving (Show, Eq)
 
 instance Hashable Node where
-  hashwithSalt :: Int -> Node -> Int
   hashWithSalt salt (NodeSegment t) = hashWithSalt salt t
   hashWithSalt salt (NodePath []) = salt
   hashWithSalt salt (NodePath nodes) = foldr xor 0 (map (hashWithSalt salt) nodes)
@@ -51,13 +47,14 @@ nodeName :: Node -> Text
 --  A 'NodeSegment' is unpacked to 'Text'.
 --  A 'NodePath' is the name of the member nodes joined by "/" characters.
 nodeName (NodeSegment t) = t
-nodeName (NodePath nodes) = T.intercalate POSIX.pathSeparator $ map nodeName nodes
+nodeName (NodePath nodes) = T.intercalate (T.singleton POSIX.pathSeparator) $ map nodeName nodes
 
 nodeString :: Node -> String
 -- ^Convenience function that provides the return value of 'nodeName' as a 'String'.
 nodeString = T.unpack . nodeName
 
 nodeFilePath :: Node -> FilePath
+-- ^Nice alias for 'nodeString', but using the 'FilePath' type alias.
 nodeFilePath = nodeString
 
 simplifyNode :: Node -> Node
@@ -79,7 +76,7 @@ simplifyNode (NodePath path) = NodePath loopResult
     loopResult = loop [] path pathBacktracks
     pathBacktracks = nodesBacktrack path
     loop :: [Node] -> [Node] -> Bool -> [Node]
-    loop good [] _ _ = good
+    loop good [] _ = good
     loop good ((p@(NodeSegment t)):ps) checkBacktrack
       | t == "" = loop good ps checkBacktrack
       | t == "." = loop good ps checkBacktrack
@@ -102,7 +99,7 @@ concatNodes parent child = simplifyNode $ NodePath [parent, child]
 nodeFromFilePath :: FilePath -> Node
 -- ^Given a file path, get the corresponding simplified node. Note that invalid paths are converted
 --  to valid paths via 'POSIX.makeValid'.
-nodeFromFilePath x | !(POSIX.isValid x) == nodeFromFilePath $ POSIX.makeValid x
+nodeFromFilePath x | not (POSIX.isValid x) = nodeFromFilePath $ POSIX.makeValid x
 nodeFromFilePath "." = NodePath []
 nodeFromFilePath ".." = NodePath []
 nodeFromFilePath fp = simplifyNode pathsPath
