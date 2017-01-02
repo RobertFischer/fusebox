@@ -1,6 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 
 module System.Fuse.Box.FSTypes
   (
@@ -11,9 +13,20 @@ module System.Fuse.Box.FSTypes
     MonadIO,
     MonadError,
     FuseCall,
-    FuseResult
+    FuseResult,
+    module System.IO,
+    module System.Posix.Types,
+    module Foreign.C.Error,
+    ByteString,
+    fsError,
+    fsOkay,
+    fsErrorOrOkay
   ) where
 
+import Data.ByteString (ByteString)
+import System.Posix.Types
+import Foreign.C.Error
+import System.IO
 import System.Fuse
 import Data.Either
 import Control.Monad.IO.Class
@@ -27,23 +40,23 @@ class (MonadIO m, MonadError Errno m) => MonadFuse m where
   runFuse :: m a -> FuseResult a
   -- ^Runs fuse and unpacks it into a 'FuseResult'
 
-  fsError :: Errno -> FuseResult a
-  -- ^Convenience method for throwing an 'Errno' as a result.
-  fsError a = return (Left a)
+fsError :: Errno -> FuseResult a
+-- ^Convenience method for throwing an 'Errno' as a result.
+fsError a = return (Left a)
 
-  fsOkay :: FuseResult a
-  -- ^Convenience method for generating an 'eOK' file system result.
-  fsOkay = fsError eOK
+fsOkay :: FuseResult a
+-- ^Convenience method for generating an 'eOK' file system result.
+fsOkay = fsError eOK
 
-  fsErrOrOkay :: FuseResult a -> FuseCall
-  -- ^Returns the 'Errno' value, which may be 'eOK'. If the 'FuseCall'
-  -- successfully returns a value (including `()`), then this function
-  -- returns 'eOK'. If the call raises an error, returns the error value.
-  fsErrOrOkay action = do
-    result <- action
-    case result of
-      (Left e) -> return e
-      (Right _) -> fsOkay
+fsErrorOrOkay :: FuseResult a -> FuseCall
+-- ^Returns the 'Errno' value, which may be 'eOK'. If the 'FuseCall'
+-- successfully returns a value (including `()`), then this function
+-- returns 'eOK'. If the call raises an error, returns the error value.
+fsErrorOrOkay action = do
+  result <- action
+  case result of
+    (Left e) -> return e
+    (Right _) -> fsOkay
 
 nodeify :: (FilePath -> a) -> (Node -> a)
 -- ^Converts functions that start with a 'FilePath' to one that
@@ -86,7 +99,7 @@ class (CommonFS m fh) => ReadFS m fh where
   fsGetFileStat :: Node -> m FileStat
   fsReadSymlink :: Node -> m Node
   fsRead :: Node -> fh -> ByteCount -> FileOffset -> m ByteString
-  fsGetStats :: Node -> m FileSystemStatus
+  fsGetStats :: Node -> m FileSystemStats
   fsReadDir :: Node -> m [(Node, FileStat)]
   fsAccess :: Node -> Int -> m ()
 
@@ -110,7 +123,7 @@ class FuseBox m fh where
   -- ^Provides the FUSE operations that make up the implementation
   -- of FUSE.
 
-  def :: FuseOperations
+  def :: FuseOperations fh
   -- ^Shorthand for the default FUSE operations.
   def = defaultFuseOps
 

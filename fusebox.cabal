@@ -24,7 +24,8 @@ library
                        HFuse,
                        text >= 1.2.2.1 && < 1.3,
                        filepath >= 1.4.1.0 && < 1.5,
-                       hashable >= 1.2.4.0 && < 1.3
+                       hashable >= 1.2.4.0 && < 1.3,
+                       bytestring >= 0.10.8.1 && < 0.11
   exposed-modules:     System.Fuse.Box
 
 executable MemoryFS
@@ -34,6 +35,5 @@ executable MemoryFS
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -with-rtsopts=-T -O3 -Wall -Werror
   default-extensions:  OverloadedStrings
   build-depends:       base >= 4.7 && < 5,
-                       bytestring >= 0.10.8.1 && < 0.11,
                        unordered-containers >= 0.2.7.1 && < 0.3,
                        stm >= 2.4.4.1 && < 2.5
