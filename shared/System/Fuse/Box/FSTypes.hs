@@ -1,7 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 
 module System.Fuse.Box.FSTypes
@@ -104,7 +102,7 @@ class (CommonFS m fh) => ReadFS m fh where
   fsAccess :: Node -> Int -> m ()
 
 -- |Class for filesystem operations done by writable filesystems.
-class (CommonFS m fh) => WriteFS m fh where
+class (ReadFS m fh) => WriteFS m fh where
   fsCreateLink :: Node -> Node -> m ()
   fsSetFileMode :: Node -> FileMode -> m ()
   fsSetOwnerGroup :: Node -> UserID -> GroupID -> m ()
@@ -117,18 +115,12 @@ class (CommonFS m fh) => WriteFS m fh where
   fsCreateSymlink :: Node -> Node -> m ()
   fsWrite :: Node -> fh -> ByteString -> FileOffset -> m ByteCount
 
--- |Class for things that can provide filesystem operations
-class FuseBox m fh where
-  fuseOperations :: m (FuseOperations fh)
-  -- ^Provides the FUSE operations that make up the implementation
-  -- of FUSE.
+def :: FuseOperations fh
+-- ^Shorthand for the default FUSE operations.
+def = defaultFuseOps
 
-  def :: FuseOperations fh
-  -- ^Shorthand for the default FUSE operations.
-  def = defaultFuseOps
-
-instance {-# OVERLAPPABLE #-} (ReadFS m fh) => FuseBox m fh where
-  fuseOperations = FuseOperations
+readFuseOps :: (ReadFS m fh) => m (FuseOperations fh)
+readFuseOps = FuseOperations
     {
         fuseGetFileStat = denode fsGetFileStat,
         fuseReadSymbolicLink = denode fsReadSymlink,
@@ -159,42 +151,8 @@ instance {-# OVERLAPPABLE #-} (ReadFS m fh) => FuseBox m fh where
         fuseDestroy = liftIO fsDestroy
       }
 
-instance {-# OVERLAPPABLE #-} (WriteFS m fh) => FuseBox m fh where
-    fuseOperations = FuseOperations
-      {
-        fuseGetFileStat = fuseGetFileStat def,
-        fuseReadSymbolicLink = fuseReadSymbolicLink def,
-        fuseCreateDevice = denodeToErrno fsCreateDevice,
-        fuseCreateDirectory = denodeToErrno fsCreateDirectory,
-        fuseRemoveLink = denodeToErrno fsRemoveLink,
-        fuseRemoveDirectory = denodeToErrno fsRemoveDirectory,
-        fuseCreateSymbolicLink = denode2ToErrno fsCreateSymlink,
-        fuseRename = denode2ToErrno fsRename,
-        fuseCreateLink = denode2ToErrno fsCreateLink,
-        fuseSetFileMode = denodeToErrno fsSetFileMode,
-        fuseSetOwnerAndGroup = denodeToErrno fsSetOwnerGroup,
-        fuseSetFileSize = denodeToErrno fsSetFileSize,
-        fuseSetFileTimes = denodeToErrno fsSetFileTimes,
-        fuseOpen = denode fsOpen,
-        fuseRead = fuseRead def,
-        fuseWrite = denode fsWrite,
-        fuseGetFileSystemStats = fuseGetFileSystemStats def,
-        fuseFlush = denodeToErrno fsFlush,
-        fuseRelease = \fp fh -> do
-          _ <- denode fsClose $ fp fh
-          return (),
-        fuseSynchronizeFile = denodeToErrno fsSyncFile,
-        fuseOpenDirectory = denodeToErrno fsOpenDir,
-        fuseReadDirectory = fuseReleaseDirectory def,
-        fuseReleaseDirectory = denodeToErrno fsCloseDir,
-        fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
-        fuseAccess = fuseAccess def,
-        fuseInit = liftIO fsInit,
-        fuseDestroy = liftIO fsDestroy
-      }
-
-instance {-# OVERLAPPING #-} (ReadFS m fh, WriteFS m fh) => FuseBox m fh where
-    fuseOperations = FuseOperations
+readFuseOps :: (WriteFS m fh) => m (FuseOperations fh)
+writeFuseOps = FuseOperations
       {
         fuseGetFileStat = denode fsGetFileStat,
         fuseReadSymbolicLink = denode fsReadSymlink,
