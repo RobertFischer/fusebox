@@ -1,24 +1,24 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
 module System.Fuse.Box.FSTypes
   (
-    CommonFS,
-    ReadFS,
-    WriteFS,
-    FuseBox,
+    FuseBox(..),
     MonadIO,
     MonadError,
-    FuseCall,
-    FuseResult,
     module System.IO,
     module System.Posix.Types,
     module Foreign.C.Error,
     ByteString,
+    Exception,
     fsError,
     fsOkay,
-    fsErrorOrOkay
+    fsErrorOrOkay,
+    fuseBoxMain,
+    readFuseBox,
+    writeFuseBox,
+    readWriteFuseBox
   ) where
 
 import Data.ByteString (ByteString)
@@ -30,13 +30,48 @@ import Data.Either
 import Control.Monad.IO.Class
 import Control.Monad.Except
 import System.Fuse.Box.Node
+import Control.Exception.Base (Exception)
 
 type FuseResult a = IO (Either Errno a)
 type FuseCall = IO Errno
 
-class (MonadIO m, MonadError Errno m) => MonadFuse m where
+data FuseBox m fh = FuseBox
+  {
+    fsbxGetFileStat :: Node -> m FileStat,
+    fsbxReadSymbolicLink :: Node -> m FilePath,
+    fsbxCreateDevice :: Node -> EntryType -> FileMode -> DeviceID -> m (),
+    fsbxCreateDirectory :: Node -> FileMode -> m (),
+    fsbxRemoveLink :: Node -> m (),
+    fsbxRemoveDirectory :: Node -> m (),
+    fsbxCreateSymbolicLink :: Node -> Node -> m (),
+    fsbxRename :: Node -> Node -> m (),
+    fsbxCreateLink :: Node -> Node -> m (),
+    fsbxSetFileMode :: Node -> Node -> m (),
+    fsbxSetOwnerAndGroup :: Node -> UserID -> GroupID -> m (),
+    fsbxSetFileSize :: Node -> FileOffset -> m (),
+    fsbxOpen :: Node -> OpenMode -> OpenFileFlags -> m fh,
+    fsbxRead :: Node -> fh -> ByteCount -> FileOffset -> m ByteString,
+    fsbxWrite :: Node -> fh -> ByteString -> FileOffset -> m ByteCount,
+    fsbxGetFileSystemStats :: Node -> m FileSystemStats,
+    fsbxFlush :: Node -> fh -> m (),
+    fsbxRelease :: Node -> fh -> m (),
+    fsbxSynchronizeFile :: Node -> SyncType -> m (),
+    fsbxOpenDirectory :: Node -> m (),
+    fsbxReadDirectory :: Node -> m [(Node, FileStat)],
+    fsbxReleaseDirectory :: Node -> m (),
+    fsbxSynchronizeDirectory :: Node -> SyncType -> m (),
+    fsbxAccess :: Node -> Int -> m (),
+    fsbxInit :: m (),
+    fsbxDestroy :: m ()
+  }
+
+class (MonadIO m, MonadError Errno m) => MonadFuse m fh | m -> fh where
   runFuse :: m a -> FuseResult a
   -- ^Runs fuse and unpacks it into a 'FuseResult'
+
+class (MonadFuse m fh) => MonadFSRead m fh | m -> fh where
+
+class (MonadFuse m fh) => MonadFSWrite m fh | m -> fh where
 
 fsError :: Errno -> FuseResult a
 -- ^Convenience method for throwing an 'Errno' as a result.
@@ -54,12 +89,7 @@ fsErrorOrOkay action = do
   result <- action
   case result of
     (Left e) -> return e
-    (Right _) -> fsOkay
-
-nodeify :: (FilePath -> a) -> (Node -> a)
--- ^Converts functions that start with a 'FilePath' to one that
--- starts with a 'Node'.
-nodeify f = \node -> f (nodeFilePath node)
+    (Right _) -> return eOK
 
 denodeify :: (Node -> a) -> (FilePath -> a)
 -- ^Converts functions that start with a 'Node' to one that
@@ -71,115 +101,36 @@ denodeify2 :: (Node -> Node -> a) -> (FilePath -> FilePath -> a)
 -- a function that starts with two 'FilePath' arguments.
 denodeify2 f = \fp1 fp2 -> f (nodeFromFilePath fp1) (nodeFromFilePath fp2)
 
--- |Shorthand for when we need to unpack to an error number exclusively.
-denodeToErrno f = fsErrOrOkay <$> denodeify f
+def :: FuseOperations
+-- ^Shorthand for the default fuse operations.
+def = defaultFuseOperations
 
--- |Shorthand for when we need to unpack a bi-'Node' function to an error number exclusively.
-denode2ToErrno f = fsErrOrOkay <$> denodeify2 f
+readFuseBox :: (MonadFSRead m fh) => FuseBox m fh
+-- ^Creates a 'FuseBox' which is read-only and executes in the given monad.
+readFuseBox = FuseBox
+  {
 
--- |Shorthand for when we need to unpack the file system monad into a full result.
-denode f = runFuseCall $ denodeify f
+  }
 
--- |Class for common filesystem operations.
-class (MonadFuse m) => CommonFS m fh where
-  fsOpen :: Node -> OpenMode -> OpenFileFlags -> m fh
-  fsClose :: Node -> fh -> m ()
-  fsSyncFile :: Node -> SyncType -> m ()
-  fsOpenDir :: Node -> m ()
-  fsSyncDir :: Node -> SyncType -> m ()
-  fsCloseDir :: Node -> m ()
-  fsInit :: m ()
-  fsDestroy :: m ()
-  fsFlush :: Node -> fh -> m ()
+writeFuseBox :: (MonadFSWrite m fh) => FuseBox m fh
+-- ^Creates a 'FuseBox' which is write-only and executes in the given monad.
+writeFuseBox = FuseBox
+  {
 
--- |Class for filesystem operations done by readable filesystems.
-class (CommonFS m fh) => ReadFS m fh where
-  fsGetFileStat :: Node -> m FileStat
-  fsReadSymlink :: Node -> m Node
-  fsRead :: Node -> fh -> ByteCount -> FileOffset -> m ByteString
-  fsGetStats :: Node -> m FileSystemStats
-  fsReadDir :: Node -> m [(Node, FileStat)]
-  fsAccess :: Node -> Int -> m ()
+  }
 
--- |Class for filesystem operations done by writable filesystems.
-class (ReadFS m fh) => WriteFS m fh where
-  fsCreateLink :: Node -> Node -> m ()
-  fsSetFileMode :: Node -> FileMode -> m ()
-  fsSetOwnerGroup :: Node -> UserID -> GroupID -> m ()
-  fsSetFileSize :: Node -> FileOffset -> m ()
-  fsSetFileTimes :: Node -> EpochTime -> EpochTime -> m ()
-  fsCreateDevice :: Node -> EntryType -> FileMode -> DeviceID -> m ()
-  fsCreateDirectory :: Node -> FileMode -> m ()
-  fsRemoveLink :: Node -> m ()
-  fsRemoveDirectory :: Node -> m ()
-  fsCreateSymlink :: Node -> Node -> m ()
-  fsWrite :: Node -> fh -> ByteString -> FileOffset -> m ByteCount
-
-def :: FuseOperations fh
--- ^Shorthand for the default FUSE operations.
-def = defaultFuseOps
-
-readFuseOps :: (ReadFS m fh) => m (FuseOperations fh)
-readFuseOps = FuseOperations
+readWriteFuseBox :: (MonadFSRead m fh, MonadFSWrite m fh) => FuseBox m fh
+-- ^Creates a 'FuseBox' which is read-write and executes in the given monad.
+readWriteFuseBox = readBox
     {
-        fuseGetFileStat = denode fsGetFileStat,
-        fuseReadSymbolicLink = denode fsReadSymlink,
-        fuseCreateDevice = fuseCreateDevice def,
-        fuseCreateDirectory = fuseCreateDirectory def,
-        fuseRemoveLink = fuseRemoveLink def,
-        fuseRemoveDirectory = fuseRemoveDirectory def,
-        fuseCreateSymbolicLink = fuseCreateSymbolicLink def,
-        fuseRename = fuseRename def,
-        fuseCreateLink = fuseCreateLink def,
-        fuseSetFileMode = fuseSetFileMode def,
-        fuseSetFileTimes = fuseSetFileTimes def,
-        fuseOpen = denode fsOpen,
-        fuseRead = denode fsRead,
-        fuseWrite = fuseWrite def,
-        fuseGetFileSystemStats = denode fsGetStats,
-        fuseFlush = denodeToErrno fsFlush,
-        fuseRelease = \fp fh -> do
-          _ <- denode fsClose $ fp fh
-          return (),
-        fuseSynchronizeFile = denodeToErrno fsSyncFile,
-        fuseOpenDirectory = denodeToErrno fsOpenDir,
-        fuseReadDirectory = denode fsReadDir,
-        fuseReleaseDirectory = denodeToErrno fsCloseDir,
-        fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
-        fuseAccess = denodeToErrno fsAccess,
-        fuseInit = liftIO fsInit,
-        fuseDestroy = liftIO fsDestroy
-      }
 
-readFuseOps :: (WriteFS m fh) => m (FuseOperations fh)
-writeFuseOps = FuseOperations
-      {
-        fuseGetFileStat = denode fsGetFileStat,
-        fuseReadSymbolicLink = denode fsReadSymlink,
-        fuseCreateDevice = denodeToErrno fsCreateDevice,
-        fuseCreateDirectory = denodeToErrno fsCreateDirectory,
-        fuseRemoveLink = denodeToErrno fsRemoveLink,
-        fuseRemoveDirectory = denodeToErrno fsRemoveDirectory,
-        fuseCreateSymbolicLink = denode2ToErrno fsCreateSymlink,
-        fuseRename = denode2ToErrno fsRename,
-        fuseCreateLink = denode2ToErrno fsCreateLink,
-        fuseSetFileMode = denode2ToErrno fsSetFileMode,
-        fuseSetOwnerAndGroup = denodeToErrno fsSetOwnerGroup,
-        fuseSetFileSize = denodeToErrno fsSetFileSize,
-        fuseOpen = denode fsOpen,
-        fuseRead = denode fsRead,
-        fuseWrite = denode fsWrite,
-        fuseGetFileSystemStats = denode fsGetStats,
-        fuseFlush = denodeToErrno fsFlush,
-        fuseRelease = \fp fh -> do
-          _ <- denode fsClose $ fp fh
-          return (),
-        fuseSynchronizeFile = denodeToErrno fsSyncFile,
-        fuseOpenDirectory = denodeToErrno fsOpenDir,
-        fuseReadDirectory = denode fsReadDir,
-        fuseReleaseDirectory = denodeToErrno fsCloseDir,
-        fuseSynchronizeDirectory = denodeToErrno fsSyncDir,
-        fuseAccess = denodeToErrno fsAccess,
-        fuseInit = liftIO fsInit,
-        fuseDestroy = liftIO fsDestroy
-      }
+    }
+  where
+    readBox = readFuseBox
+    writeBox = writeFuseBux
+
+fuseBoxMain :: (Exception e) => FuseBox m fh -> (e -> IO Errno) -> IO ()
+-- ^Converts the 'FuseBox' into 'FuseOperations' and then calls 'fuseMain'.
+fuseBoxMain box handler = fuseMain ops handler
+  where
+    ops = undefined
