@@ -252,8 +252,14 @@ rwFuseBox = roFuseBox
 
 fuseBoxMain :: (Exception e) => FuseBox m fh -> (e -> IO Errno) -> IO ()
 -- ^Converts the 'FuseBox' into 'FuseOperations' and then calls 'fuseMain'.
-fuseBoxMain box handler = fuseMain ops handler
-  where
-    ops = undefined
+fuseBoxMain box handler = do
+    ops <- boxToOps box
+    fuseMain ops handler
 
--- TODO Implement the conversion from a FuseBox to a FuseOperations
+boxToOps :: FuseBox m fh -> IO (FuseOperations fh)
+-- ^Converts the 'FuseBox' into 'FuseOperations'.
+boxToOps box = do
+  return FuseOperations
+    {
+
+    }
